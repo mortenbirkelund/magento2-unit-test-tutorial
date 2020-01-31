@@ -1,0 +1,94 @@
+name: Magento Coding Standards
+
+on: pull_request
+
+jobs:
+  eslint:
+    name: ESLint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        # MOST EXAMPLES WILL REFERENCE @v1. @v2 version offers more capabilities,
+        # which will allow future changes to cause likely fewer errors.
+        # E.g. http://archive.ph/eqWUN#issuecomment-570072796
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install eslint
+        run: |
+          yarn global add eslint
+
+      - name: Fetch Magento 2.3 eslint rules
+        run: |
+          wget https://raw.githubusercontent.com/magento/magento2/2.3/dev/tests/static/testsuite/Magento/Test/Js/_files/eslint/.eslintrc-magento \
+            --no-clobber \
+            --output-document=.eslintrc 
+            # DOES NOT OVERWRITE an existing .eslintrc file
+
+      - name: Run eslint
+        run: |
+          ~/.config/yarn/global/node_modules/.bin/eslint --no-error-on-unmatched-pattern .
+          # MODIFIED DEFAULT BEHAVIOUR. By default eslint fails if no JavaScript files
+          # have been found in the specified path folders and subfolders
+          # See http://archive.ph/79vrK#59898966
+          #
+          # IGNORING FILES FROM CHECKS. To ignore certain files and folders from checks
+          # you can include a .eslintignore file in the root of the repository.
+          # See http://archive.ph/Ejtsj#eslintignore
+
+  phpcs:
+    name: PHP CodeSniffer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install PHP CodeSniffer
+        run: composer global require --no-progress "squizlabs/php_codesniffer=*"
+
+      - name: Magento Coding Standard configuration for PHP CodeSniffer
+        run: |
+          git clone https://github.com/magento/magento-coding-standard.git /home/runner/.config/magento-conding-standard
+          ~/.composer/vendor/bin/phpcs --config-set installed_paths /home/runner/.config/magento-conding-standard
+          # ADAPTED TO GLOBAL PHPCS INSTALL using the installation instructions from
+          # magento-coding-standard.git repository. `--config-set` requires absolute
+          # paths, might cause breakage in the future if GitHub changes the $HOME
+          # path.
+          #
+          # CANNOT JUST COPY THE RULESET as the coding standard uses additional code
+          # for it's tweaked *Sniffs and DocBlock comments validation.
+
+      - name: Run PHP CodeSniffer
+        run: |
+          ~/.composer/vendor/bin/phpcs --standard=Magento2 .
+
+  phpunit:
+    name: PHPUnit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Sets env.PHPUnit if phpunit.xml or phpunit.xml.dist exists
+        run: |
+          [ -f phpunit.xml ]      && echo "::set-env name=RUN_PHPUNIT::yes"
+          [ -f phpunit.xml.dist ] && echo "::set-env name=RUN_PHPUNIT::yes"
+          exit 0 # exit with success status even if we don't set variable
+          # PHPUNIT LOADS IN ORDER phpunit.xml, and if not found tries the
+          # phpunit.xml.dist file. Based on that criteria, we decide if to
+          # allow the followup steps to run.
+
+      - name: Install PHPUnit
+        if: env.RUN_PHPUNIT
+        run: composer global require --no-progress "phpunit/phpunit=*"
+
+      - name: Install composer dependencies
+        if: env.RUN_PHPUNIT
+        run: composer install
+
+      - name: Run PHPUnit
+        if: env.RUN_PHPUNIT
+        run: |
+          ~/.composer/vendor/bin/phpunit
