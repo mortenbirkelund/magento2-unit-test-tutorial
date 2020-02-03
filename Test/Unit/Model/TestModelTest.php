@@ -1,7 +1,7 @@
 <?php
 namespace Pekebyte\UnitTests\Test\Unit\Model;
  
-class TestModel extends \PHPUnit\Framework\TestCase
+class TestModelTest extends \PHPUnit\Framework\TestCase
 {
     protected $_objectManager;
     protected $_model;
