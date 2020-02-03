@@ -66,29 +66,87 @@ jobs:
   phpunit:
     name: PHPUnit
     runs-on: ubuntu-latest
+
+    services:
+      mariadb:
+        # MAGENTO REQUIRES DB CONNECTION DURING INSTALLATION, thus we expose a MariaDB
+        # instance for this specific job. Using custom service instead of the builtin
+        # MySQL server because that's not recommended anymore.
+        # See http://archive.ph/WdtdD#M831
+        image: mariadb
+        ports:
+          - 13306:3306
+        env:
+          MYSQL_DATABASE: magento
+          MYSQL_ROOT_PASSWORD: magento
+
     steps:
       - uses: actions/checkout@v2
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Sets env.PHPUnit if phpunit.xml or phpunit.xml.dist exists
+      - uses: shivammathur/setup-php@v1
+        with:
+          php-version: '7.3'
+          # MAGENTO DOESN'T SUPPORT PHP VERSION 7.4.* right now. We switch
+          # to 7.3 to be able to install the Magento2 Community Edition
+          # package. Used for PHPUnit testing, as it provides the
+          # configuration and autoloader.
+          extensions: intl
+
+      - name: Install Magento2 project
         run: |
-          [ -f phpunit.xml ]      && echo "::set-env name=RUN_PHPUNIT::yes"
-          [ -f phpunit.xml.dist ] && echo "::set-env name=RUN_PHPUNIT::yes"
-          exit 0 # exit with success status even if we don't set variable
-          # PHPUNIT LOADS IN ORDER phpunit.xml, and if not found tries the
-          # phpunit.xml.dist file. Based on that criteria, we decide if to
-          # allow the followup steps to run.
+          cd ..
+          composer create-project --no-progress magento/community-edition magento
+          cd magento
+          bin/magento setup:install \
+            --base-url=http://localhost/magento2ee \
+            --db-host=0.0.0.0:13306 \
+            --db-name=magento \
+            --db-user=root \
+            --db-password=magento \
+            --admin-firstname=admin \
+            --admin-lastname=admin \
+            --admin-email=admin@admin.com \
+            --admin-user=admin \
+            --admin-password=admin123 \
+            --language=en_US \
+            --currency=USD \
+            --timezone=America/Chicago \
+            --use-rewrites=1
+          # MAGENTO NEEDS TO BE INSTALLED IN ORDER TO RUN TESTS, as the dev/tests
+          # is created during the installation step. We need that folder for their
+          # phpunit.xml.dist definition
 
-      - name: Install PHPUnit
-        if: env.RUN_PHPUNIT
-        run: composer global require --no-progress "phpunit/phpunit=*"
-
-      - name: Install composer dependencies
-        if: env.RUN_PHPUNIT
-        run: composer install
-
-      - name: Run PHPUnit
-        if: env.RUN_PHPUNIT
+      - name: Detect module name
         run: |
-          ~/.composer/vendor/bin/phpunit
+          sudo apt install -y	libxml2-utils
+          FULL_NAME=$(xmllint --xpath 'string(/config/module/@name)' etc/module.xml)
+          echo "::set-env name=FULL_NAME::$FULL_NAME"
+          echo "::set-env name=VENDOR::"$(echo $FULL_NAME | cut -d_ -f 1)
+          echo "::set-env name=MODULE::"$(echo $FULL_NAME | cut -d_ -f 2)
+          # USE XMLLINT TO EXTRACT THE FULL MODULE NAME, that has the format
+          # vendor_name. In the cut commands we split the string up by the '_'
+          # delimiter and return the individual module name parts
+
+      - name: Register Magento2 module
+        env:
+          FULL_NAME: ${{ env.FULL_NAME }}
+          VENDOR: ${{ env.VENDOR }}
+          MODULE: ${{ env.MODULE }}
+        run: |
+          cd ..
+          mkdir --parents magento/app/code/$VENDOR
+          ln -s `pwd`/magento2-unit-test-tutorial magento/app/code/$VENDOR/$MODULE
+          cd magento
+          php bin/magento module:enable $FULL_NAME
+
+      - name: Run unit tests (and optionally install composer dependencies)
+        env:
+          VENDOR: ${{ env.VENDOR }}
+          MODULE: ${{ env.MODULE }}
+        run: |
+          [ -f composer.json ] && composer install
+          cd ../magento
+          ./vendor/bin/phpunit -c dev/tests/unit/phpunit.xml.dist app/code/$VENDOR/$MODULE/Test/Unit
+          # See http://archive.ph/TbQYe#running-only-a-subset-of-the-unit-tests
